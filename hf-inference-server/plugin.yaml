@@ -1,0 +1,205 @@
+name: hf-inference-server
+version: v0.1.0
+description: "Serve a Hugging Face model over an OpenAI-compatible endpoint (vLLM, SGLang, or llama.cpp)"
+author: scttfrdmn
+license: Apache-2.0
+
+config:
+  model:
+    type: string
+    required: true
+    description: "Hugging Face repo id, e.g. Qwen/Qwen3-32B. For engine=llamacpp this must be a GGUF repo."
+  engine:
+    type: string
+    default: "vllm"
+    description: "Inference engine: vllm, sglang, or llamacpp"
+  port:
+    type: int
+    default: 8000
+    description: "Port the OpenAI-compatible API listens on"
+  hf_token:
+    type: string
+    default: ""
+    description: "Hugging Face token; required for gated repos (gated: manual)"
+  max_model_len:
+    type: int
+    default: 0
+    description: "Context length cap. 0 = engine default (derived from the model config)"
+  tensor_parallel_size:
+    type: int
+    default: 0
+    description: "GPUs to shard across. 0 = autodetect from nvidia-smi"
+  extra_args:
+    type: string
+    default: ""
+    description: "Additional engine flags appended verbatim to the server command"
+  gguf_file:
+    type: string
+    default: ""
+    description: "GGUF filename within the repo (engine=llamacpp only). Empty = first *.gguf found"
+
+conditions:
+  remote:
+    - type: platform
+      os: linux
+      message: "hf-inference-server requires a Linux instance"
+    - type: command
+      run: nvidia-smi
+      message: "No NVIDIA GPU detected. This plugin needs a GPU instance (g5/g6e/g7/g7e/p4/p5/p6)."
+
+permissions:
+  controller:
+    env: []
+    network: false
+    commands: []
+  instance:
+    root: true
+    network: true
+    ports: [8000]
+    files:
+      - /etc/cultivar/inference.env
+      - /etc/systemd/system/hf-inference-server.service
+      - /var/lib/cultivar/hf-cache
+
+remote:
+  install:
+    - type: run
+      run: |
+        set -euo pipefail
+        # Container runtime + NVIDIA toolkit. The spore.host GPU AMIs normally
+        # ship both; install only what's missing so this stays fast on a warm AMI.
+        if ! command -v docker >/dev/null 2>&1; then
+          if command -v dnf >/dev/null 2>&1; then
+            dnf install -y docker
+          else
+            apt-get update && apt-get install -y docker.io
+          fi
+        fi
+        systemctl enable --now docker
+
+        if ! docker info 2>/dev/null | grep -qi nvidia; then
+          if command -v dnf >/dev/null 2>&1; then
+            curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
+              -o /etc/yum.repos.d/nvidia-container-toolkit.repo
+            dnf install -y nvidia-container-toolkit
+          else
+            curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+              | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+            curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+              | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+              > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+            apt-get update && apt-get install -y nvidia-container-toolkit
+          fi
+          nvidia-ctk runtime configure --runtime=docker
+          systemctl restart docker
+        fi
+
+        mkdir -p /var/lib/cultivar/hf-cache /etc/cultivar
+
+  configure:
+    - type: run
+      run: |
+        set -euo pipefail
+        # Resolve the engine to a container image and a server command. Weights are
+        # NOT baked in — the engine pulls them from HF into a host-mounted cache so
+        # a restart doesn't re-download tens of GB.
+        ENGINE="{{ config.engine }}"
+        PORT="{{ config.port }}"
+        MODEL="{{ config.model }}"
+        TP="{{ config.tensor_parallel_size }}"
+        MAXLEN="{{ config.max_model_len }}"
+        EXTRA="{{ config.extra_args }}"
+        GGUF="{{ config.gguf_file }}"
+
+        # Autodetect GPU count when tensor_parallel_size is 0.
+        if [ "$TP" = "0" ]; then
+          TP="$(nvidia-smi --list-gpus | wc -l | tr -d ' ')"
+        fi
+
+        case "$ENGINE" in
+          vllm)
+            IMAGE="vllm/vllm-openai:latest"
+            ARGS="--model $MODEL --port $PORT --tensor-parallel-size $TP"
+            [ "$MAXLEN" != "0" ] && ARGS="$ARGS --max-model-len $MAXLEN"
+            ;;
+          sglang)
+            IMAGE="lmsysorg/sglang:latest"
+            ARGS="--model-path $MODEL --port $PORT --host 0.0.0.0 --tp $TP"
+            [ "$MAXLEN" != "0" ] && ARGS="$ARGS --context-length $MAXLEN"
+            ;;
+          llamacpp)
+            # llama.cpp serves GGUF, which lives in a DIFFERENT HF repo than the
+            # original safetensors weights. -hf takes owner/repo[:file].
+            IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda"
+            HFREF="$MODEL"
+            [ -n "$GGUF" ] && HFREF="$MODEL:$GGUF"
+            ARGS="-hf $HFREF --host 0.0.0.0 --port $PORT -ngl 999"
+            [ "$MAXLEN" != "0" ] && ARGS="$ARGS -c $MAXLEN"
+            ;;
+          *)
+            echo "unsupported engine '$ENGINE' (want vllm, sglang, or llamacpp)" >&2
+            exit 1
+            ;;
+        esac
+
+        [ -n "$EXTRA" ] && ARGS="$ARGS $EXTRA"
+
+        # Written 0600: may contain a Hugging Face token.
+        umask 077
+        cat > /etc/cultivar/inference.env <<EOF
+        CULTIVAR_IMAGE=$IMAGE
+        CULTIVAR_ARGS=$ARGS
+        CULTIVAR_PORT=$PORT
+        HUGGING_FACE_HUB_TOKEN={{ config.hf_token }}
+        EOF
+
+        docker pull "$IMAGE"
+
+    - type: run
+      run: |
+        set -euo pipefail
+        PORT="{{ config.port }}"
+        cat > /etc/systemd/system/hf-inference-server.service <<EOF
+        [Unit]
+        Description=cultivar hf-inference-server ({{ config.engine }})
+        After=docker.service
+        Requires=docker.service
+
+        [Service]
+        EnvironmentFile=/etc/cultivar/inference.env
+        Restart=on-failure
+        RestartSec=10
+        TimeoutStartSec=0
+        ExecStartPre=-/usr/bin/docker rm -f hf-inference-server
+        ExecStart=/bin/sh -c '/usr/bin/docker run --rm --name hf-inference-server \
+          --gpus all --ipc=host -p ${CULTIVAR_PORT}:${CULTIVAR_PORT} \
+          -v /var/lib/cultivar/hf-cache:/root/.cache/huggingface \
+          -e HUGGING_FACE_HUB_TOKEN \
+          \${CULTIVAR_IMAGE} \${CULTIVAR_ARGS}'
+        ExecStop=/usr/bin/docker stop hf-inference-server
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+        systemctl daemon-reload
+
+  start:
+    - type: run
+      run: systemctl enable --now hf-inference-server
+
+  health:
+    interval: 30s
+    steps:
+      # The model must be loaded, not merely the process running: a large model
+      # can take many minutes to download and shard, and until /v1/models answers
+      # the endpoint is not usable.
+      - type: run
+        run: curl -fsS "http://127.0.0.1:{{ config.port }}/v1/models" >/dev/null
+
+  stop:
+    - type: run
+      run: systemctl stop hf-inference-server || true
+
+outputs:
+  url:
+    description: "OpenAI-compatible base URL (http://<host>:<port>/v1)"

@@ -1,0 +1,46 @@
+name: ci
+
+# Build, vet, and test on every push and PR. No AWS or HF access needed — the
+# default test suite covers pure logic and golden fixtures, not live API calls.
+# Live-API tests are opt-in behind `-tags live` (see Makefile: test-live).
+on:
+  push:
+    branches: [main]
+    # Skip the data-only commits the refresh job pushes.
+    paths-ignore:
+      - "docs/**"
+      - "history/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: gofmt -l . | tee /tmp/fmt && test ! -s /tmp/fmt
+      - run: go test ./...
+
+  # The plugin manifest must stay valid and parseable independently of the Go
+  # build — spawn fetches it straight from raw.githubusercontent.com, so a broken
+  # commit here breaks installs for anyone pinned to main.
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Plugin manifest exists at the path spawn resolves
+        run: test -f hf-inference-server/plugin.yaml
+      - name: Manifest is valid YAML and within spawn's 64 KiB spec cap
+        run: |
+          python3 -c "import yaml,sys; yaml.safe_load(open('hf-inference-server/plugin.yaml'))"
+          size=$(wc -c < hf-inference-server/plugin.yaml)
+          echo "manifest is ${size} bytes (cap 65536)"
+          test "$size" -le 65536
