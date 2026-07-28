@@ -118,8 +118,13 @@ each encode one with a regression test; don't collapse them.
    "would have succeeded" for instances you cannot actually launch. It validates
    permissions and parameters, not capacity or quota.
 10. **Region matters more than expected.** us-east-2 has the full modern GPU
-    lineup at the cheapest rates; **us-west-1 has none of these families.** Same
-    instance varies ~70% across regions. Always include us-east-2.
+    lineup at the cheapest rates — 61 GPU types across 15 families. us-west-1 has
+    9 types across 3: `g4dn`, `p5`, `p5en` (verified 2026-07-28, correcting an
+    earlier note here that it had none). The correction matters in the direction
+    that costs money: us-west-1 is thin but carries the *expensive* end, so
+    p5.48xlarge will serve a 71 GiB model there at $55/hr while no g6e/g7e exists
+    to serve it for $3. A fit check alone recommends it happily. Same instance
+    varies ~70% across regions. Always include us-east-2.
 11. **Quota is the gate that actually stops people.** P-family on-demand quota is
     often 0 by default and an increase takes days. Check it in `compare`, not as
     a deploy-time surprise. Codes: L-417A185B (On-Demand P), L-DB2E81BA
