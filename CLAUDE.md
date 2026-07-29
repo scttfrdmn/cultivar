@@ -109,11 +109,14 @@ each encode one with a regression test; don't collapse them.
    cheapest matching row — `USE1-TrainingPlanUpfrontFee:ml.p4d.24xlarge` is
    $13.57 against a real `Hosting` rate of $25.25, which fabricates a "SageMaker
    is cheaper" result. The right component for inference is `Hosting`.
-   truffle#107 is **still open** (verified at v0.47.0): `pickSageMakerRate`
-   accepts the first row whose component is in a compute set that includes both
-   `Hosting` and `Cluster`, so on ml.p4d.24xlarge it can return HyperPod's
-   $25.9100 instead of Hosting's $25.2513 depending on row order. Wrap locally
-   with a `Hosting`-preferring selector until it lands upstream.
+   truffle#107 is **fixed in v0.48.0** (verified 2026-07-28, correcting an
+   earlier note here that it was still open): `SageMakerPriceFor` takes a
+   `SageMakerUsage` and the default preference now leads with `Hosting`, so the
+   order-dependent $25.9100-vs-$25.2513 flip on ml.p4d.24xlarge is gone and usage
+   is part of the cache key. Call `SageMakerPriceFor(..., aws.UsageInference)`
+   rather than `SageMakerPrice` — the bare method is only right by convention,
+   and naming the usage is what records that this is an endpoint rate and not a
+   HyperPod one. So #27 is a thin call plus a regression test, not a wrapper.
 9. **`DryRun` is not an availability probe.** `run-instances --dry-run` returns
    "would have succeeded" for instances you cannot actually launch. It validates
    permissions and parameters, not capacity or quota.
@@ -150,11 +153,20 @@ Service Quotas. Money only enters at `deploy` and `benchmark`.
 ## Upstream
 
 File issues on the relevant repo rather than working around them here.
-Open: truffle#107 (SageMaker `Hosting` vs `Cluster` component), #108
-(obtainability signal), #109 (capacity blocks), #110 (dropped per-region
-errors), #111 (no Bedrock pricing); spawn#447 (stale slurm prices), #448 (plugin
-registry + bare-name 404); spore-host/libs#29 (fabricated GPU prices).
 
-Nothing filed from here is fixed upstream yet, so every wrapper in
-`internal/` is a stopgap. Re-check before reimplementing: if an issue has
-closed, delete the wrapper rather than keeping both.
+Open: truffle#108 (obtainability signal), #109 (capacity blocks), #110 (dropped
+per-region errors), #111 (no Bedrock pricing); spawn#447 (stale slurm prices),
+#448 (plugin registry + bare-name 404); spore-host/libs#29 (fabricated GPU
+prices).
+
+Fixed upstream: truffle#107 (SageMaker component) in v0.48.0 — use
+`SageMakerPriceFor` with `aws.UsageInference`; truffle#114 (static pricer
+fallback returning a plausible wrong rate); truffle#106 (nil-matcher panic).
+
+**Check the version before writing a stopgap.** These get fixed faster than the
+notes here get updated, and #107 sat in this file as "still open" for a day after
+v0.48.0 shipped the exact API that was requested. Two of the three fixes above
+landed as the shape proposed in the issue, so filing with a concrete API sketch
+is worth the effort. When an issue closes, delete the wrapper rather than keeping
+both — and re-run the live suite against the new version, which is what catches a
+fix that changed behavior in passing.
