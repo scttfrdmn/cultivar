@@ -82,7 +82,18 @@ func (a Assumptions) Validate() error {
 
 // Ratio renders the blend ratio the way a user states it: "3:1".
 func (a Assumptions) Ratio() string {
-	return fmt.Sprintf("%g:%g", a.InputWeight, a.OutputWeight)
+	return report.BlendRatio(a.InputWeight, a.OutputWeight)
+}
+
+// Record writes these assumptions into a report envelope's assumption block.
+//
+// The mapping lives here, beside the fields it reads, rather than in the report
+// package: [report.Assumptions] is a wire shape with no arithmetic in it, and
+// report cannot import this package anyway. What matters is that there is exactly
+// one such mapping, because a report that states a 3:1 blend while the break-even
+// figure was computed at 1:1 is worse than one that states nothing.
+func (a Assumptions) Record(into report.Assumptions) report.Assumptions {
+	return into.WithBlend(a.InputWeight, a.OutputWeight, a.Utilization)
 }
 
 // Parity is the point at which self-hosting and Bedrock cost the same.

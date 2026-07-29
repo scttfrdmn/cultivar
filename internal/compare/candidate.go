@@ -185,6 +185,28 @@ type RegionStatus struct {
 	Usable int
 }
 
+// Report returns the region's status in report-envelope form.
+//
+// The three-way collapse is the whole reason this conversion is explicit. A failed
+// query becomes [report.RegionFailed] carrying the error text, and a successful one
+// with nothing usable becomes [report.RegionEmpty] — never the other way round. The
+// error text is preserved because [report.Region.Validate] rejects a failure without
+// one: an unexplained failure is indistinguishable, downstream, from an empty region.
+func (r RegionStatus) Report() report.Region {
+	out := report.Region{Name: r.Region, Considered: r.Considered, Usable: r.Usable}
+	switch {
+	case r.Err != nil:
+		// Counts are zeroed: a region that failed contributed no information, and a
+		// partial count from a query that then failed reads as a complete one.
+		out.State, out.Error, out.Considered, out.Usable = report.RegionFailed, r.Err.Error(), 0, 0
+	case r.Usable > 0:
+		out.State = report.RegionOK
+	default:
+		out.State = report.RegionEmpty
+	}
+	return out
+}
+
 // Selection is the outcome of evaluating a model against a set of regions.
 type Selection struct {
 	// Candidates is every type evaluated: usable ones first, cheapest first within
@@ -229,6 +251,20 @@ func (s *Selection) Cheapest() (Candidate, bool) {
 		}
 	}
 	return Candidate{}, false
+}
+
+// ReportRegions returns every region's status in report-envelope form, in the order
+// queried. Named for the conversion rather than the field it reads, since Regions is
+// already taken by that field.
+func (s *Selection) ReportRegions() []report.Region {
+	if s == nil {
+		return nil
+	}
+	out := make([]report.Region, 0, len(s.Regions))
+	for _, r := range s.Regions {
+		out = append(out, r.Report())
+	}
+	return out
 }
 
 // Failures returns the regions that could not be queried.

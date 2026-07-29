@@ -210,14 +210,28 @@ const DefaultOverheadFraction = 0.15
 
 // Sizing is the memory a serving configuration needs, broken out so a report can
 // show which component dominates.
+//
+// The four resolved parameters are echoed back because [Size] fills in defaults for
+// any of them left at zero. Without them here, a report that wants to state the
+// assumptions behind a fit decision has to re-derive those defaults — two copies of
+// the same rule, guaranteed to drift — and the report would then be asserting an
+// assumption that is not the one the arithmetic used.
 type Sizing struct {
 	Weights  report.Amount // GiB
 	KVCache  report.Amount // GiB
 	Overhead report.Amount // GiB
 	Total    report.Amount // GiB
 
+	// ContextTokens and Concurrency are the resolved values, not the requested ones:
+	// a zero request for context becomes the model's max_position_embeddings, which
+	// for Qwen3-32B is 40,960 tokens and ~10 GiB of cache.
 	ContextTokens int
 	Concurrency   int
+
+	// KVCacheDTypeBytes and OverheadFraction are the resolved cache element width and
+	// headroom allowance.
+	KVCacheDTypeBytes float64
+	OverheadFraction  float64
 }
 
 // Size computes the GPU memory required to serve this model under req.
@@ -244,7 +258,12 @@ func (m Model) Size(req SizingRequest) Sizing {
 		overheadFraction = DefaultOverheadFraction
 	}
 
-	s := Sizing{ContextTokens: ctx, Concurrency: conc}
+	s := Sizing{
+		ContextTokens:     ctx,
+		Concurrency:       conc,
+		KVCacheDTypeBytes: width,
+		OverheadFraction:  overheadFraction,
+	}
 	s.Weights = m.WeightBytes()
 
 	if ctx <= 0 {
@@ -275,6 +294,27 @@ func (m Model) Size(req SizingRequest) Sizing {
 	}
 	s.Total = total
 	return s
+}
+
+// Record writes the resolved sizing parameters into a report envelope's assumption
+// block, so a report states the values [Size] actually used rather than the ones the
+// caller asked for. See [Sizing] for why those can differ.
+func (s Sizing) Record(into report.Assumptions) report.Assumptions {
+	return into.WithSizing(s.ContextTokens, s.Concurrency, s.KVCacheDTypeBytes, s.OverheadFraction)
+}
+
+// Subject returns the report-envelope description of this model.
+//
+// The Bedrock id is not filled in here — that is the bedrock package's fact, not the
+// repo's — so a caller sets it after resolving the mapping. An empty one is a valid
+// finding rather than a gap: 94 of 132 mappable repos are marketplace-only.
+func (m Model) Subject() report.Subject {
+	return report.Subject{
+		ModelID:      m.ID,
+		Gated:        m.Gate.RequiresToken(),
+		Quantization: m.QuantMethod,
+		ObservedAt:   m.ObservedAt,
+	}
 }
 
 // FitsIn reports whether a GPU pool of the given size can hold this sizing, and
