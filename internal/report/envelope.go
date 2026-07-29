@@ -314,6 +314,21 @@ type Subject struct {
 	ObservedAt time.Time `json:"observedAt"`
 }
 
+// MarshalJSON implements [json.Marshaler], normalizing the observation time to UTC.
+//
+// Subject carries its own marshaller for the same reason [Amount] does: the normalization
+// has to happen wherever the type is written, not only where it happens to be embedded
+// today. Without it a report generated in a non-UTC zone emits generatedAt as Z and
+// observedAt with an offset — the two timestamps a reader compares to judge staleness,
+// rendered in different frames, which sorts wrongly in the history log and reads as a
+// negative age.
+func (s Subject) MarshalJSON() ([]byte, error) {
+	type alias Subject // avoids recursing into this method
+	out := alias(s)
+	out.ObservedAt = s.ObservedAt.UTC()
+	return json.Marshal(out)
+}
+
 // Validate reports whether s identifies a model.
 func (s Subject) Validate() error {
 	if strings.TrimSpace(s.ModelID) == "" {

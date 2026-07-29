@@ -40,6 +40,26 @@ func livePricer(t *testing.T) *TokenPricer {
 	return NewTokenPricer(cfg)
 }
 
+// skipIfThrottled turns a Price List rate limit into a skip rather than a failure.
+//
+// These tests exist to detect drift in an undocumented catalogue shape, and a throttle is
+// not drift — it is this suite competing with itself, since `go test ./...` runs packages
+// in parallel and GetProducts is rate-limited per account, not per caller. Reporting the
+// two the same way is the exact conflation this whole project is about: an empty answer
+// because AWS said no is not an answer about AWS. A skip is loud in the output and does
+// not assert anything false.
+//
+// Deliberately not a retry. The SDK already retried three times before this error
+// surfaced, and a suite that retries past its own throttle just moves the failure to
+// whichever package runs next.
+func skipIfThrottled(t *testing.T, err error) {
+	t.Helper()
+	var throttle *pricingtypes.ThrottlingException
+	if errors.As(err, &throttle) {
+		t.Skipf("Price List throttled, which is a rate limit and not a schema change: %v", err)
+	}
+}
+
 // liveRows fetches one region's whole Bedrock catalogue once, so the census tests
 // below do not make 46 identical round trips.
 func liveRows(t *testing.T, p *TokenPricer, region string) []priceRow {
@@ -48,6 +68,7 @@ func liveRows(t *testing.T, p *TokenPricer, region string) []priceRow {
 	defer cancel()
 	rows, err := p.fetch(ctx, region)
 	if err != nil {
+		skipIfThrottled(t, err)
 		t.Fatalf("%s: %v", region, err)
 	}
 	if len(rows) == 0 {
@@ -67,6 +88,7 @@ func TestLiveQwenRatesStillMatchTheRecordedOnes(t *testing.T) {
 
 	got, err := p.Lookup(ctx, "qwen.qwen3-32b-v1:0", "us-east-1")
 	if err != nil {
+		skipIfThrottled(t, err)
 		t.Fatal(err)
 	}
 	if got.PriceListModel != "Qwen3 32B" {
@@ -496,6 +518,7 @@ func TestLiveOpenWeightModelsStayInTheOpenWeightCatalogue(t *testing.T) {
 				NextToken: token,
 			})
 			if err != nil {
+				skipIfThrottled(t, err)
 				t.Fatalf("%s: %v", service, err)
 			}
 			for _, item := range out.PriceList {
@@ -553,6 +576,10 @@ func TestLiveARegionWithoutTheModelIsNotAPrice(t *testing.T) {
 		t.Fatalf("us-west-1 priced qwen.qwen3-32b-v1:0 (model %q, %d rates); it offered no "+
 			"foundation-model entry there on 2026-07-27", got.PriceListModel, len(got.Rates))
 	}
+	// Checked before the type assertion below, which a throttle would otherwise satisfy
+	// non-nil and fail as a wrong error type — reporting a rate limit as a regression in
+	// how absence is reported, in the one test whose whole subject is that distinction.
+	skipIfThrottled(t, err)
 	if !errors.As(err, new(*ErrNoPriceListModel)) {
 		t.Errorf("absent model returned %T (%v), want *ErrNoPriceListModel so callers can render "+
 			"\"no token price\" as its own state", err, err)

@@ -66,6 +66,33 @@ resolved renders as *unpriced* rather than as a guess. Stale hardcoded AWS rates
 have been found four separate times across this ecosystem; the discipline is
 structural here rather than aspirational.
 
+## The report is a contract
+
+Reports are `report.v1`, a frozen JSON Schema you can get from the binary that
+produced them:
+
+```bash
+cultivar schema | jq '.["$defs"].amount'
+```
+
+Compatibility within `report.v1` is additive: fields may be added and
+enum-valued strings may gain members — new AWS states are the normal case, not an
+error — but nothing is removed, renamed, retyped, or redefined. Consumers must
+ignore what they don't recognize, which is why no object in the schema sets
+`additionalProperties: false`.
+
+The rule the format exists for: an absent value and zero are not
+interchangeable. Money that couldn't be resolved is `null` with provenance
+`unavailable`, never `0`. `p5e.48xlarge` genuinely has no on-demand rate, and
+reporting that as `$0` — or as the family-based guess that yields $9.60 — is the
+specific failure this schema prevents.
+
+Every report also embeds the assumptions that produced it: the traffic mix,
+assumed utilization, context length, and the throughput figure with its own
+provenance. A recommendation without its inputs is unfalsifiable, and two runs a
+day apart can disagree because a price moved, because a region was added, or
+because an assumption changed — only the first two are facts about AWS.
+
 ## Status
 
 Early. See the [milestones](https://github.com/scttfrdmn/cultivar/milestones) for

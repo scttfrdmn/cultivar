@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scttfrdmn.github.io/cultivar/api/v1/report.v1.json",
+  "title": "cultivar report.v1",
+  "description": "The envelope every cultivar report carries: what the report is about, when it was made, which regions were read, and what it assumed. A report body (a verdict, a price table, a benchmark) is attached by the command that produced it and is not part of this version.\n\nCompatibility within report.v1 is additive: fields may be added, and enum-valued strings may gain members. Fields are never removed or renamed, no field's type changes, and no field's meaning changes. A consumer must ignore properties and enum members it does not recognize — new AWS states are the normal case, not an error. This is why no object here sets additionalProperties: false; a validator that rejects an added field would fail on exactly the change this policy permits.\n\nThe rule the whole format exists for: an absent value and zero are not interchangeable. Money that could not be resolved is null with provenance \"unavailable\", never 0.",
+
+  "type": "object",
+  "required": ["schemaVersion", "kind", "toolVersion", "generatedAt", "subject", "query", "regions", "assumptions"],
+  "properties": {
+    "schemaVersion": {
+      "description": "The wire format version. Independent of toolVersion: one schema outlives many builds.",
+      "type": "string",
+      "const": "report.v1"
+    },
+    "kind": {
+      "description": "The report type, e.g. \"compare\" or \"price\". Lets one consumer handle a mixed directory of history records without inferring shape from content. Not an enum: new commands add kinds, and a reader that does not recognize one should skip the record rather than fail the directory.",
+      "type": "string",
+      "minLength": 1
+    },
+    "toolVersion": {
+      "description": "The cultivar build that produced this report. A wrong number is traceable to a build only if the build is recorded.",
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAt": {
+      "description": "When the report was produced, in UTC. This is the outer bound on freshness, not the freshness of the contents: each amount carries its own observedAt, and a price read from a cache is older than the report containing it. A consumer computes staleness from this and degrades its own claims accordingly.",
+      "$ref": "#/$defs/timestamp"
+    },
+    "account": {
+      "description": "The AWS account whose view this is. Optional, because prices are not account-specific — but quotas and offered-type sets are, so a quota finding is only interpretable with this recorded.",
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "partition": {
+      "description": "The AWS partition, e.g. \"aws\", \"aws-us-gov\", \"aws-cn\". Optional. It matters because rates and available services differ by partition: a GovCloud run mislabelled as commercial produces a report full of prices that do not apply to it, and nothing in the report looks wrong. Read off the caller's ARN, never inferred from a region prefix. Constrained as a prefix rather than an enum because the aws-iso family has members this tool will never see, and an unrecognized partition is still a partition.",
+      "type": "string",
+      "pattern": "^aws(-[a-z0-9-]+)?$"
+    },
+    "subject": { "$ref": "#/$defs/subject" },
+    "query": { "$ref": "#/$defs/query" },
+    "regions": {
+      "description": "The per-region outcome, in the order requested. Requested order rather than completion order: discovery fans out across goroutines, and a history log full of reordered-but-identical reports is one where a real change cannot be spotted in a diff.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/region" }
+    },
+    "assumptions": { "$ref": "#/$defs/assumptions" }
+  },
+
+  "$defs": {
+    "timestamp": {
+      "title": "timestamp",
+      "description": "An RFC 3339 instant in UTC, e.g. \"2026-07-28T14:30:00Z\".\n\nUTC is required rather than merely preferred, which is why there is a pattern here and not only a format keyword: \"format\" is annotation-only by default in Draft 2020-12, so a validator running with defaults accepts any string at all — including \"yesterday\". A report whose timestamps mix frames sorts wrongly in the history log, and a naive comparison of two of them yields a negative age.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+
+    "amount": {
+      "title": "amount",
+      "description": "A number that knows where it came from. Every numeric quantity in a report is one of these; there is no bare float anywhere in the format.\n\nvalue is nullable and always present. An unresolvable price serializes as null with provenance \"unavailable\", so a consumer that ignores provenance entirely still cannot mistake \"no price exists\" for \"free\" — p5e.48xlarge genuinely has no on-demand rate, and reporting that as 0 (or as a family-based guess) is the specific failure this format prevents.\n\nThe two states are enforced, not merely described: \"unavailable\" requires value to be null, and the other three require a number. A payload asserting a price with provenance \"unavailable\" is a contradiction, and the number is the part a careless consumer reads.",
+      "type": "object",
+      "required": ["value", "unit", "provenance", "source"],
+      "allOf": [
+        {
+          "if": { "properties": { "provenance": { "const": "unavailable" } }, "required": ["provenance"] },
+          "then": {
+            "properties": { "value": { "type": "null" } },
+            "description": "No value could be resolved, so there is no number to carry. Not 0, and not a family-based estimate."
+          },
+          "else": {
+            "properties": { "value": { "type": "number" } },
+            "description": "A provenance that claims a value must carry one; a null here would decode as a zero price in any consumer that trusts the provenance."
+          }
+        }
+      ],
+      "properties": {
+        "value": {
+          "description": "The number, or null when provenance is \"unavailable\". Never a sentinel.",
+          "type": ["number", "null"]
+        },
+        "unit": {
+          "description": "The dimension. Not a label: amounts of differing units are never added, which is what catches adding a capacity block's upfront fee (USD) to an hourly rate (USD/hour).",
+          "type": "string",
+          "enum": ["USD", "USD/hour", "USD/1Mtok", "USD/GB-month", "tok/s", "GiB", "hour", "count", "fraction"]
+        },
+        "provenance": {
+          "description": "Where the value came from. \"live\" was read from an API this run; \"derived\" was computed from other amounts, and is only as trustworthy as its worst input; \"external\" is a published third-party measurement, which can go stale without anything failing; \"unavailable\" means no value could be resolved.",
+          "type": "string",
+          "enum": ["live", "derived", "external", "unavailable"]
+        },
+        "source": {
+          "description": "The origin, or the reason there is no value. Free-form because its audience is a human checking a number against the console. For an unavailable amount this should say what would make the value obtainable — \"no on-demand price exists; capacity-block only\" rather than \"lookup failed\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAt": {
+          "description": "When the value was read, or when an external figure was published. Absent for derived amounts, whose age is that of their inputs.",
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+
+    "subject": {
+      "title": "subject",
+      "description": "What the report is about.",
+      "type": "object",
+      "required": ["modelId", "gated", "observedAt"],
+      "properties": {
+        "modelId": {
+          "description": "The Hugging Face repo id, e.g. \"Qwen/Qwen3-32B\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "bedrockModelId": {
+          "description": "The Bedrock foundation-model id when one exists. Absence is a finding rather than a gap: of 132 reverse-lookupable HF ids, 94 are marketplace-only, where you rent an instance and there is no token meter at all — so there is nothing for self-hosting to be compared against.",
+          "type": "string"
+        },
+        "gated": {
+          "description": "Whether the repo requires a Hugging Face token. Blocks deploy, not comparison.",
+          "type": "boolean"
+        },
+        "quantization": {
+          "description": "The checkpoint's quantization method, absent when unquantized.",
+          "type": "string"
+        },
+        "observedAt": {
+          "description": "When the model metadata was read.",
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+
+    "query": {
+      "title": "query",
+      "description": "The parameters that gated the result, as opposed to those that merely selected from it.\n\nThe distinction is load-bearing: asking for 8 instances where 1 was requested flipped \"no capacity exists\" to \"offerings available\", so a capacity report that does not state its instance count is not interpretable, and two runs with different counts look like AWS changed its mind.",
+      "type": "object",
+      "required": ["regions"],
+      "properties": {
+        "regions": {
+          "description": "The region set as requested, in order. Kept alongside the per-region results so that a region which was asked for and vanished from the results is visible rather than reading as one with no capacity.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "instanceCount": {
+          "description": "How many instances the query asked to be available at once. Absent when the dimension did not apply.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "durationHours": {
+          "description": "The capacity-block duration requested. The *returned* duration belongs with each offering and never here: a 24h request came back with a 19h block, and dividing the fee by the requested duration understates the rate by 21%.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "instanceTypes": {
+          "description": "An explicit type restriction, absent when the whole catalogue was enumerated. Recorded because \"nothing fits\" and \"nothing fits among the three types you named\" are different findings.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "region": {
+      "title": "region",
+      "description": "What happened when one region was queried.",
+      "type": "object",
+      "required": ["name", "state", "considered", "usable"],
+      "properties": {
+        "name": {
+          "description": "The region code, e.g. \"us-east-2\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "description": "The distinction that matters is between \"asked, and there is nothing\" (empty) and \"never successfully asked\" (failed). Both produce zero candidates, and conflating them turns an AccessDenied into a claim about AWS inventory — which then sends a user to a costlier region with no indication anything went wrong. More members arrive with the obtainability work; treat an unrecognized state as not-informative rather than failing.",
+          "type": "string",
+          "enum": ["ok", "empty", "failed"]
+        },
+        "considered": {
+          "description": "How many candidates were evaluated. Recorded even on failure, as zero, so a reader can see that a region contributing nothing contributed nothing because it was never read.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "usable": {
+          "description": "How many candidates could serve the model. Never exceeds considered.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "description": "The failure text. Present exactly when state is \"failed\": a failure with no text cannot be told from an empty result, and a state that is not \"failed\" carrying an error is not ok.",
+          "type": "string"
+        }
+      }
+    },
+
+    "assumptions": {
+      "title": "assumptions",
+      "description": "The inputs that change the answer without changing any fact about AWS.\n\nStructured rather than free-text because the history log has to be able to tell a price change from an assumption change. Two runs a day apart can disagree because a rate moved, because a region was added, or because the assumed traffic mix changed — and only the first two are facts about AWS.",
+      "type": "object",
+      "required": ["inputTokenWeight", "outputTokenWeight", "utilization", "contextTokens", "concurrency", "kvCacheDTypeBytes", "overheadFraction", "throughput"],
+      "properties": {
+        "inputTokenWeight": {
+          "description": "The input side of the traffic mix. Recorded as a weight pair rather than a rendered ratio so the arithmetic is reproducible without parsing a string, and so 6:2 and 3:1 do not read as different assumptions.",
+          "type": "number",
+          "minimum": 0
+        },
+        "outputTokenWeight": {
+          "description": "The output side of the traffic mix. Bedrock meters input and output separately and output costs 4x input for Qwen3-32B, so any single $/1M figure has already assumed a shape: 3:1 blends to $0.2625/1M and 1:1 to $0.375, moving g7e.4xlarge's break-even from ~4,233 to ~2,963 tok/s. Note the direction — a pricier blend makes self-hosting *easier* to justify, so output-heavy traffic lowers the throughput bar.",
+          "type": "number",
+          "minimum": 0
+        },
+        "utilization": {
+          "description": "The fraction of billed hours actually serving, in (0, 1]. There is no default anywhere in this tool: a silent 1.0 is the most flattering assumption available to a self-hosting recommendation and is almost never true.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "contextTokens": {
+          "description": "Context length, which sizes the KV cache and so decides which instances qualify at all.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "concurrency": {
+          "description": "Concurrent requests. At concurrency 8, Qwen3-32B's KV cache exceeds its own weights, so this changes the answer to \"what fits\" and not merely the throughput.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "kvCacheDTypeBytes": {
+          "description": "KV cache element width in bytes (2 for fp16/bf16).",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "overheadFraction": {
+          "description": "Allowance for activations, CUDA graphs, and fragmentation. Recorded because it is an estimate, not a measurement.",
+          "type": "number",
+          "minimum": 0
+        },
+        "throughput": {
+          "description": "The tok/s figure the comparison used, with its own provenance. Usually external (a published benchmark) or unavailable until one has been measured on this hardware — which is exactly why it must be visible rather than folded into the result.",
+          "$ref": "#/$defs/amount"
+        }
+      }
+    }
+  }
+}

@@ -213,6 +213,17 @@ func (a *Amount) UnmarshalJSON(data []byte) error {
 	if in.Provenance.Known() && in.Value == nil {
 		return fmt.Errorf("report: provenance %q with no value", in.Provenance)
 	}
+	// And the converse, which is the direction that costs money. An unavailable amount
+	// carrying a number is a contradiction, and the number is the part a careless
+	// consumer reads: it would have to ignore provenance to be misled, which is exactly
+	// what a consumer reaching for `.value` does. Decoding it silently would also make
+	// the value unrecoverable, since [Amount.Value] reports it as unknown — so the
+	// payload asserts a price that nothing downstream can see or check.
+	if !in.Provenance.Known() && in.Value != nil {
+		return fmt.Errorf("report: provenance %q with a value (%v); an unavailable amount "+
+			"must be null, or a consumer reading the number gets a price this tool "+
+			"considers unresolved", in.Provenance, *in.Value)
+	}
 	*a = Amount{unit: in.Unit, provenance: in.Provenance, source: in.Source}
 	if in.Value != nil && in.Provenance.Known() {
 		a.value = *in.Value

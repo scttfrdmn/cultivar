@@ -212,6 +212,28 @@ func TestUnmarshalRejectsProvenanceWithoutValue(t *testing.T) {
 	}
 }
 
+// And the converse, which is the direction that costs money.
+//
+// The number in this payload is the fabricated one: truffle's fallback pricer returns
+// $9.60/hr for p5e.48xlarge, which has no on-demand rate at all. A report that decoded
+// this silently would carry a price the tool considers unresolved *and* be unable to show
+// it — [Amount.Value] reports an unavailable amount as unknown — so the only consumer that
+// ever sees the 9.60 is one reading the raw JSON, which is the careless one.
+func TestUnmarshalRejectsAValueItCallsUnavailable(t *testing.T) {
+	const payload = `{"value":9.60,"unit":"USD/hour","provenance":"unavailable","source":"no on-demand price exists"}`
+	var a Amount
+	err := json.Unmarshal([]byte(payload), &a)
+	if err == nil {
+		v, known := a.Value()
+		t.Errorf("unmarshal accepted an unavailable amount carrying 9.60; it decoded to "+
+			"value %v known=%v, so the asserted price is invisible to every accessor", v, known)
+	}
+	if err != nil && !strings.Contains(err.Error(), "9.6") {
+		t.Errorf("the error does not name the offending value, so a reader cannot tell what "+
+			"was rejected: %v", err)
+	}
+}
+
 func TestUnmarshalRejectsUnknownProvenance(t *testing.T) {
 	const payload = `{"value":9.60,"unit":"USD/hour","provenance":"estimated","source":"family heuristic"}`
 	var a Amount
