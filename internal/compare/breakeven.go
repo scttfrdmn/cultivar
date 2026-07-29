@@ -37,8 +37,13 @@ type Assumptions struct {
 	// Bedrock's two meters into one price. Both are required and neither has a
 	// default, because output tokens cost 4x input for Qwen3-32B: a 3:1 mix prices
 	// at $0.2625/1M and a 1:1 mix at $0.375, moving g7e.4xlarge's break-even from
-	// ~4,233 to ~6,047 tok/s. That is enough to flip a recommendation, so the ratio
+	// ~4,233 to ~2,963 tok/s. That is enough to flip a recommendation, so the ratio
 	// is an argument, never a constant.
+	//
+	// Note the direction, which is easy to state backwards: output-heavy traffic
+	// raises Bedrock's blended price, which makes self-hosting *easier* to justify
+	// and lowers the throughput bar. So the input-heavy end of the range is the
+	// conservative one for a self-hosting recommendation, not the flattering one.
 	InputWeight  float64
 	OutputWeight float64
 

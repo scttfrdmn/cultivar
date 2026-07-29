@@ -79,8 +79,10 @@ each encode one with a regression test; don't collapse them.
    input $0.15/1M and output $0.60/1M for Qwen3-32B, but `priority` is 1.75× and
    `flex`/`batch` are 0.5×. Taking the first Price List row yields *priority*.
    The blend also depends on an input:output ratio — 3:1 gives $0.2625/1M, 1:1
-   gives $0.375 (+43%), moving break-even ~1,800 tok/s. Make the ratio explicit
-   and print it. (truffle#111)
+   gives $0.375 (+43%), moving g7e.4xlarge's break-even from 4,233 to 2,963 tok/s.
+   Note the direction: a pricier blend makes self-hosting *easier* to justify, so
+   output-heavy traffic **lowers** the bar. Input-heavy is the conservative end.
+   Make the ratio explicit and print it. (truffle#111)
 3. **modelId ↔ Price List name is not a key join.** hf-bedrock-map gives
    `qwen.qwen3-32b-v1:0`; Price List keys on `"Qwen3 32B"`. `usagetype` is
    internally inconsistent (`USE1-Qwen3-32B-input-tokens` vs

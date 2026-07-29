@@ -150,8 +150,12 @@ func TestBreakEvenThroughput(t *testing.T) {
 
 func TestBlendRatioSensitivity(t *testing.T) {
 	// At 1:1 the blend is $0.375/1M — 43% above the 3:1 figure — which moves
-	// g7e.4xlarge's break-even from ~4,233 to ~6,047 tok/s. Large enough to flip a
+	// g7e.4xlarge's break-even from ~4,233 to ~2,963 tok/s. Large enough to flip a
 	// recommendation, so the ratio can never be a buried constant.
+	//
+	// The direction is downward, and worth stating because it is easy to get
+	// backwards: a pricier Bedrock token makes self-hosting easier to justify, so
+	// output-heavy traffic lowers the throughput bar rather than raising it.
 	three, err := Blend(qwenInput, 3, qwenOutput, 1, "3:1")
 	if err != nil {
 		t.Fatal(err)
